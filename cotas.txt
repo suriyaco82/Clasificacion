@@ -1,0 +1,142 @@
+import sys
+import os
+import laspy
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel, 
+                             QPushButton, QProgressBar, QMessageBox, QFileDialog, 
+                             QScrollArea, QCheckBox, QHBoxLayout, QSlider)
+from PyQt5.QtCore import Qt
+import pyvista as pv
+from pyvistaqt import QtInteractor
+
+class LASClassificationViewer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Suriyaco Valley - Clasificación de Puntos LAS por Cota")
+        self.setGeometry(100, 100, 1600, 1000)
+
+        # Configuración de la interfaz
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QVBoxLayout()
+        self.central_widget.setLayout(self.layout)
+
+        # Etiqueta principal
+        self.label = QLabel("Haz clic en 'Cargar Archivos LAS' para iniciar...")
+        self.label.setStyleSheet("font-size: 16px; padding: 10px;")
+        self.layout.addWidget(self.label)
+
+        # Visualizador PyVista
+        self.pv_widget = QtInteractor(self)
+        self.layout.addWidget(self.pv_widget.interactor)
+
+        # Barra de progreso
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setMaximum(100)
+        self.layout.addWidget(self.progress_bar)
+
+        # Botones y controles
+        button_layout = QHBoxLayout()
+
+        self.load_button = QPushButton("Cargar Archivos LAS")
+        self.load_button.clicked.connect(self.load_las_files)
+        button_layout.addWidget(self.load_button)
+
+        self.start_button = QPushButton("Iniciar Clasificación")
+        self.start_button.clicked.connect(self.start_classification)
+        self.start_button.setEnabled(False)
+        button_layout.addWidget(self.start_button)
+
+        self.point_size_slider = QSlider(Qt.Horizontal)
+        self.point_size_slider.setMinimum(1)
+        self.point_size_slider.setMaximum(10)
+        self.point_size_slider.setValue(5)
+        self.point_size_slider.valueChanged.connect(self.update_point_size)
+        button_layout.addWidget(QLabel("Tamaño del Punto:"))
+        button_layout.addWidget(self.point_size_slider)
+
+        self.layout.addLayout(button_layout)
+
+        # Lista de capas con scroll
+        self.layer_scroll = QScrollArea()
+        self.layer_widget = QWidget()
+        self.layer_layout = QVBoxLayout()
+        self.layer_widget.setLayout(self.layer_layout)
+        self.layer_scroll.setWidgetResizable(True)
+        self.layer_scroll.setWidget(self.layer_widget)
+        self.layer_scroll.setFixedHeight(150)
+        self.layout.addWidget(self.layer_scroll)
+
+        # Variables para manejo de datos
+        self.files_data = []
+        self.meshes = {}
+        self.current_point_size = 5
+
+    def load_las_files(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Seleccione archivos LAS", "", "LAS Files (*.las)")
+        if file_paths:
+            for file_path in file_paths:
+                try:
+                    las_data = laspy.read(file_path)
+                    self.files_data.append({"file_path": file_path, "las_data": las_data})
+                    checkbox = QCheckBox(os.path.basename(file_path))
+                    checkbox.setChecked(True)
+                    checkbox.stateChanged.connect(self.update_visualization)
+                    self.layer_layout.addWidget(checkbox)
+                    self.meshes[checkbox.text()] = self.create_pyvista_mesh(las_data)
+                    self.label.setText(f"{len(self.files_data)} archivo(s) LAS cargado(s).")
+                    self.start_button.setEnabled(True)
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"No se pudo cargar el archivo: {e}")
+
+            self.update_visualization()
+
+    def create_pyvista_mesh(self, las_data):
+        points = np.vstack((las_data.x, las_data.y, las_data.z)).T
+        point_cloud = pv.PolyData(points)
+
+        # Clasificar los colores en base a la cota
+        z_min = points[:, 2].min()
+        z_max = points[:, 2].max()
+        z_range = z_max - z_min
+
+        colors = np.zeros((len(points), 3))
+        normalized_z = (points[:, 2] - z_min) / z_range
+
+        # Mapear la cota a los colores azul-verde-rojo
+        colors[:, 0] = np.clip(2 * (normalized_z - 0.5), 0, 1)  # Componente roja
+        colors[:, 1] = np.clip(2 * (0.5 - np.abs(normalized_z - 0.5)), 0, 1)  # Componente verde
+        colors[:, 2] = np.clip(2 * (0.5 - normalized_z), 0, 1)  # Componente azul
+
+        point_cloud['RGB'] = colors
+        return point_cloud
+
+    def update_visualization(self):
+        self.pv_widget.clear()
+
+        for checkbox in [self.layer_layout.itemAt(i).widget() for i in range(self.layer_layout.count())]:
+            if checkbox.isChecked():
+                mesh = self.meshes.get(checkbox.text())
+                if mesh:
+                    self.pv_widget.add_mesh(mesh, scalars="RGB", rgb=True, point_size=self.current_point_size)
+        
+        self.pv_widget.reset_camera()
+        self.pv_widget.render()
+
+    def start_classification(self):
+        QMessageBox.information(self, "Información", "La clasificación de puntos por cota ya está aplicada en la visualización. No es necesario clasificar nuevamente.")
+
+    def update_point_size(self):
+        self.current_point_size = self.point_size_slider.value()
+        self.update_visualization()
+
+def main():
+    app = QApplication(sys.argv)
+    viewer = LASClassificationViewer()
+    viewer.show()
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
